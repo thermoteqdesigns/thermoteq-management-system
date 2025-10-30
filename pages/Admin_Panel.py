@@ -1,27 +1,36 @@
 import streamlit as st
 from pathlib import Path
 import shutil
-import yaml
-from yaml.loader import SafeLoader
 import os
 import datetime
-import bcrypt
+import gspread
+import pandas as pd
+from google.oauth2.service_account import Credentials
 
-# --- Admin Check ---
+# ==========================================================
+# --- ADMIN ACCESS CONTROL ---
+# ==========================================================
 if st.session_state.get("user_role") != "admin":
     st.error("🔒 Access Denied — Admins Only")
     st.stop()
 
-# --- PAGE CONFIG ---
+# ==========================================================
+# --- PAGE CONFIGURATION ---
+# ==========================================================
 st.set_page_config(page_title="Thermoteq Admin Panel", layout="wide")
 st.title("🛠️ Thermoteq Admin Panel")
 st.write("Centralized control for managing projects, files, users, and logs.")
+st.markdown("---")
 
+# ==========================================================
 # --- SESSION STATE FOR REFRESH ---
+# ==========================================================
 if "refresh_admin" not in st.session_state:
     st.session_state["refresh_admin"] = False
 
-# --- Directories ---
+# ==========================================================
+# --- DIRECTORIES ---
+# ==========================================================
 PROJECTS_DIR = Path("projects")
 PROJECTS_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR = Path("uploads")
@@ -31,36 +40,46 @@ LOG_FILE.parent.mkdir(exist_ok=True)
 if not LOG_FILE.exists():
     LOG_FILE.touch()
 
-# --- Helper: Log Actions ---
+# ==========================================================
+# --- HELPER: LOG ACTIONS ---
+# ==========================================================
 def log_action(action: str):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a") as f:
         f.write(f"[{timestamp}] {action}\n")
 
-# --- Load Config ---
-CONFIG_PATH = Path("config/config.yaml")
-if not CONFIG_PATH.exists():
-    st.error("Config file missing!")
+# ==========================================================
+# --- GOOGLE SHEETS CONNECTION ---
+# ==========================================================
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+SERVICE_ACCOUNT_FILE = "keys/tms-service-account.json"
+SHEET_ID = "1eCXmSX6XkVXeRtfOUHUI74ZOvd9l6IoRCSu9TDP71Ws"
+SHEET_NAME = "Sheet1"
+
+try:
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPE)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+except Exception as e:
+    st.error(f"⚠️ Could not connect to Google Sheets: {e}")
     st.stop()
 
-with open(CONFIG_PATH) as f:
-    config = yaml.load(f, Loader=SafeLoader)
-
-users = config['credentials']['usernames']
-
 # ==========================================================
-# --- TAB SELECTION ---
+# --- TAB NAVIGATION ---
 # ==========================================================
 tabs = ["Projects & Files", "Manage Users", "Activity Logs"]
 selected_tab = st.sidebar.radio("Admin Panel Sections", tabs)
 
 # ==========================================================
-# --- TAB 1: Projects & Files ---
+# --- TAB 1: PROJECTS & FILES ---
 # ==========================================================
 if selected_tab == "Projects & Files":
     st.subheader("📂 Projects & Files Management")
 
-    # List projects and uploaded files
     projects = [p for p in PROJECTS_DIR.iterdir() if p.is_dir()]
     uploaded_files = [f for f in UPLOAD_DIR.iterdir() if f.is_file()]
 
@@ -71,7 +90,7 @@ if selected_tab == "Projects & Files":
         for project in projects:
             with st.expander(f"📘 {project.name}", expanded=False):
                 st.write(f"**Path:** `{project.resolve()}`")
-                
+
                 # Delete project
                 if st.button(f"🗑️ Delete Project", key=f"del_proj_{project.name}"):
                     shutil.rmtree(project)
@@ -79,7 +98,6 @@ if selected_tab == "Projects & Files":
                     log_action(f"Deleted project: {project.name}")
                     st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
 
-                # List files in subfolders
                 for folder in ["files", "receipts", "images"]:
                     folder_path = project / folder
                     folder_path.mkdir(exist_ok=True)
@@ -115,76 +133,82 @@ if selected_tab == "Projects & Files":
                     st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
 
 # ==========================================================
-# --- TAB 2: Manage Users ---
+# --- TAB 2: MANAGE USERS (Google Sheets Integration) ---
 # ==========================================================
 elif selected_tab == "Manage Users":
     st.subheader("👤 User Management")
+    st.markdown("Manage users directly from the connected Google Sheet.")
+    st.markdown("---")
 
+    try:
+        users = sheet.get_all_records()
+        df = pd.DataFrame(users)
+    except Exception as e:
+        st.error(f"⚠️ Could not load users: {e}")
+        df = pd.DataFrame()
+
+    # --- Display Users ---
     st.markdown("### Current Users")
-    for username in list(users.keys()):  # iterate over copy of keys
-        info = users[username]
-        col1, col2, col3 = st.columns([4, 2, 2])
-        with col1:
-            st.write(f"**{info['name']}** ({username}) — Role: {info.get('role','user')}")
-        with col2:
-            new_role = st.selectbox(
-                "Change Role",
-                options=["user", "admin"],
-                index=0 if info.get("role")=="user" else 1,
-                key=f"role_{username}"
-            )
-            if new_role != info.get("role"):
-                users[username]['role'] = new_role
-                with open(CONFIG_PATH, "w") as f:
-                    yaml.dump(config, f)
-                st.success(f"✅ Updated role for {username} to {new_role}")
-                log_action(f"Updated role for {username} to {new_role}")
-                st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+    if df.empty:
+        st.info("No users found.")
+    else:
+        st.dataframe(df)
+        st.success(f"✅ {len(df)} users loaded from Google Sheets.")
 
-        with col3:
-            if st.button("🗑️ Delete User", key=f"del_user_{username}"):
-                if username == "admin":
-                    st.error("❌ Cannot delete default admin.")
-                else:
-                    del users[username]
-                    with open(CONFIG_PATH, "w") as f:
-                        yaml.dump(config, f)
-                    st.success(f"✅ Deleted user {username}")
-                    log_action(f"Deleted user: {username}")
-                    st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+    # --- Add New User ---
+    st.markdown("---")
+    st.subheader("➕ Add New User")
 
-    st.markdown("### ➕ Add New User")
-    new_username = st.text_input("Username")
-    new_name = st.text_input("Full Name")
-    new_email = st.text_input("Email")
-    new_password = st.text_input("Password", type="password")
-    new_role = st.selectbox("Role", ["user", "admin"], index=0)
+    with st.form("add_user_form"):
+        new_username = st.text_input("Username")
+        new_name = st.text_input("Full Name")
+        new_password = st.text_input("Password", type="password")
+        new_role = st.selectbox("Role", ["user", "admin"])
+        submitted = st.form_submit_button("Add User")
 
-    if st.button("Add User"):
-        if new_username and new_name and new_email and new_password:
-            if new_username in users:
-                st.error("❌ Username already exists.")
+        if submitted:
+            if new_username and new_name and new_password:
+                try:
+                    # Check if username exists
+                    existing_usernames = [u["username"] for u in users]
+                    if new_username in existing_usernames:
+                        st.error("❌ Username already exists.")
+                    else:
+                        new_row = [new_username, new_name, new_password, new_role]
+                        sheet.append_row(new_row)
+                        st.success(f"✅ User '{new_username}' added successfully!")
+                        log_action(f"Added user: {new_username} ({new_role})")
+                        st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                except Exception as e:
+                    st.error(f"⚠️ Could not add user: {e}")
             else:
-                hashed_pw = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
-                users[new_username] = {
-                    "email": new_email,
-                    "name": new_name,
-                    "password": hashed_pw,
-                    "role": new_role
-                }
-                with open(CONFIG_PATH, "w") as f:
-                    yaml.dump(config, f)
-                st.success(f"✅ User '{new_username}' added successfully.")
-                log_action(f"Added user: {new_username} with role {new_role}")
-                st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
-        else:
-            st.error("❌ Please fill in all fields.")
+                st.error("⚠️ Please fill in all required fields.")
+
+    # --- Delete User ---
+    st.markdown("---")
+    st.subheader("🗑️ Delete User")
+
+    if not df.empty:
+        selected_user = st.selectbox("Select user to delete", df["username"].tolist())
+        if st.button("Delete Selected User"):
+            try:
+                cell = sheet.find(selected_user)
+                if cell:
+                    sheet.delete_rows(cell.row)
+                    st.success(f"✅ User '{selected_user}' deleted successfully.")
+                    log_action(f"Deleted user: {selected_user}")
+                    st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                else:
+                    st.warning("⚠️ User not found in the sheet.")
+            except Exception as e:
+                st.error(f"⚠️ Could not delete user: {e}")
 
 # ==========================================================
-# --- TAB 3: Activity Logs ---
+# --- TAB 3: ACTIVITY LOGS ---
 # ==========================================================
 elif selected_tab == "Activity Logs":
     st.subheader("📜 Admin Activity Logs")
+
     if not LOG_FILE.exists() or LOG_FILE.stat().st_size == 0:
         st.info("No logs available yet.")
     else:
@@ -198,4 +222,4 @@ elif selected_tab == "Activity Logs":
 # ==========================================================
 if st.session_state["refresh_admin"]:
     st.session_state["refresh_admin"] = False
-    st.stop()  # triggers a page rerender
+    st.stop()

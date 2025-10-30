@@ -6,9 +6,9 @@
 
 import streamlit as st
 import streamlit_authenticator as stauth
-import yaml
-from yaml.loader import SafeLoader
 from pathlib import Path
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ==========================================================
 # --- PAGE CONFIGURATION ---
@@ -20,67 +20,134 @@ st.set_page_config(
 )
 
 # ==========================================================
-# --- LOAD CONFIGURATION FILE (Users + Cookies) ---
+# --- LOAD USER DATA FROM GOOGLE SHEETS ---
 # ==========================================================
-CONFIG_PATH = Path("config/config.yaml")
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-if CONFIG_PATH.exists():
-    with open(CONFIG_PATH) as file:
-        config = yaml.load(file, Loader=SafeLoader)
-else:
-    st.error("Configuration file missing! Please add config/config.yaml.")
+SERVICE_ACCOUNT_FILE = "keys/tms-service-account.json"
+SHEET_ID = "1eCXmSX6XkVXeRtfOUHUI74ZOvd9l6IoRCSu9TDP71Ws"
+SHEET_NAME = "Sheet1"
+
+try:
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPE)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
+    users = sheet.get_all_records()
+except Exception as e:
+    st.error(f"⚠️ Could not connect to Google Sheets: {e}")
     st.stop()
+
+# ==========================================================
+# --- CONVERT GOOGLE SHEET DATA TO STREAMLIT FORMAT ---
+# ==========================================================
+credentials = {"usernames": {}}
+
+for user in users:
+    username = user.get("username")
+    name = user.get("name", "")
+    password = user.get("password", "")
+    role = user.get("role", "user")
+
+    if username and password:
+        # Detect if password is already hashed
+        if not password.startswith("$2"):
+            try:
+                hashed_password = stauth.Hasher.hash_passwords([password])[0]
+            except Exception:
+                hashed_password = password
+        else:
+            hashed_password = password
+
+        credentials["usernames"][username] = {
+            "name": name,
+            "password": hashed_password,
+            "role": role,
+        }
 
 # ==========================================================
 # --- AUTHENTICATION SETUP ---
 # ==========================================================
 authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days'],
-    config.get('preauthorized', [])
+    credentials,
+    "tms_cookie",
+    "abcdef",
+    30
 )
 
 # ==========================================================
-# --- LOGIN SCREEN & ADMIN ROLE HANDLING ---
+# --- LOGIN FORM & AUTH STATUS ---
 # ==========================================================
-authenticator.login("main", "Login")
+if "authentication_status" not in st.session_state:
+    st.session_state["authentication_status"] = None
 
-# Get authentication status
-auth_status = st.session_state.get("authentication_status", None)
-user_name = st.session_state.get("name", None)
-username = st.session_state.get("username", None)
+# Only show title + subtitle when NOT logged in
+if st.session_state["authentication_status"] in [None, False]:
+    # --- LOGIN SCREEN ---
+    st.markdown(
+        """
+        <style>
+        .css-18e3th9 {padding-top: 2rem;}
+        .css-1d391kg {justify-content: center;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-# --- ADMIN ROLE HANDLING ---
-if auth_status:
-    # Fetch role from YAML config
-    credentials = config['credentials']['usernames']  # Correct key
-    user_role = credentials.get(username, {}).get('role', 'user')  # Default role = user
+    st.title("🔐 Thermoteq Management System Login")
+    st.markdown("Please enter your username and password below to access the system.")
+    st.markdown("---")
+
+    # Show login form
+    authenticator.login(location="main")
+
+else:
+    # Skip title/subtitle entirely if logged in
+    authenticator.login(location="main")
+
+# Extract login state
+name = st.session_state.get("name")
+authentication_status = st.session_state.get("authentication_status")
+username = st.session_state.get("username")
+
+# Set user role
+if authentication_status:
+    user_role = credentials["usernames"].get(username, {}).get("role", "user")
     st.session_state["user_role"] = user_role
 else:
     st.session_state["user_role"] = None
 
 # ==========================================================
+# --- HIDE SIDEBAR WHEN NOT LOGGED IN ---
+# ==========================================================
+if authentication_status is None or authentication_status is False:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] {display: none;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ==========================================================
 # --- HANDLE AUTHENTICATION STATUS ---
 # ==========================================================
-if auth_status is False:
+if authentication_status is False:
     st.error("❌ Username or password is incorrect.")
-    st.title("🔐 Thermoteq Management System Login")  # Show login title
 
-elif auth_status is None:
-    st.warning("Please enter your username and password.")
-    st.title("🔐 Thermoteq Management System Login")  # Show login title before login
+elif authentication_status is None:
+    st.info("👆 Please log in using your credentials above.")
 
-elif auth_status:
-    # ======================================================
-    # --- SIDEBAR NAVIGATION ---
-    # ======================================================
+else:
+    # USER IS LOGGED IN: SHOW SIDEBAR AND DASHBOARD
     with st.sidebar:
         st.image("assets/thermoteq_logo.jpg", width=180)
         st.title("Thermoteq Management System")
         st.markdown("---")
-        st.write(f"👤 Logged in as: **{user_name}**")
+        st.write(f"👤 Logged in as: **{name}**")
         st.write(f"🛡️ Role: **{st.session_state.get('user_role', 'user')}**")
 
         authenticator.logout("Logout", "sidebar")
@@ -93,9 +160,7 @@ elif auth_status:
         st.page_link("pages/Admin_Panel.py", label="⚙️ Admin Panel")
         st.page_link("pages/Projects.py", label="🧩 My Projects")
 
-    # ======================================================
-    # --- MAIN DASHBOARD CONTENT ---
-    # ======================================================
+    # DASHBOARD CONTENT
     st.title("🔥 Thermoteq Management System")
     st.markdown("Welcome to our central file and project management hub.")
     st.markdown("---")
@@ -109,10 +174,12 @@ elif auth_status:
         st.write("Access and manage Thermoteq marketing posters and visuals.")
 
     st.markdown("---")
-    st.info("""
+    st.info(
+        """
         💡 **Tip:** Use the sidebar to navigate between sections.
         Your uploaded files are stored securely in Google Drive.
-    """)
+        """
+    )
 
 # ==========================================================
 # --- FOOTER ---
