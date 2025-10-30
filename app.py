@@ -169,41 +169,42 @@ else:
         st.page_link("pages/Projects.py", label="🧩 My Projects")
 
     # ==========================================================
-# --- DASHBOARD CONTENT ---
-# ==========================================================
-st.title("🔥 Thermoteq Management System")
-st.markdown("Welcome to our central file and project management hub.")
-st.markdown("---")
+    # --- SHOW DASHBOARD ONLY IF LOGGED IN ---
+    # ==========================================================
+    if authentication_status:
+        # --- DASHBOARD CONTENT ---
+        st.title("🔥 Thermoteq Management System")
+        st.markdown("Welcome to our central file and project management hub.")
+        st.markdown("---")
 
-# ---------- ROW 1 ----------
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("📁 File Manager")
-    st.write("Upload, manage, and organize all company documents in one place.")
-with col2:
-    st.subheader("🖼️ Images & Posters")
-    st.write("Access and manage Thermoteq marketing posters and visuals.")
+        # ---------- ROW 1 ----------
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("📁 File Manager")
+            st.write("Upload, manage, and organize all company documents in one place.")
+        with col2:
+            st.subheader("🖼️ Images & Posters")
+            st.write("Access and manage Thermoteq marketing posters and visuals.")
 
-# ---------- ROW 2 ----------
-col3, col4 = st.columns(2)
-with col3:
-    st.subheader("🏗️ Prefab Houses")
-    st.write("Track and manage prefab housing projects efficiently.")
-with col4:
-    st.subheader("🧩 Projects")
-    st.write("Monitor ongoing and completed Thermoteq projects with ease.")
+        # ---------- ROW 2 ----------
+        col3, col4 = st.columns(2)
+        with col3:
+            st.subheader("🏗️ Prefab Houses")
+            st.write("Track and manage prefab housing projects efficiently.")
+        with col4:
+            st.subheader("🧩 Projects")
+            st.write("Monitor ongoing and completed Thermoteq projects with ease.")
 
+        st.markdown("---")
+        st.info(
+            """
+            💡 **Tip:** Use the sidebar to navigate between sections.
+            Your uploaded files are stored securely in Google Drive.
+            """
+        )
 
-    st.markdown("---")
-    st.info(
-        """
-        💡 **Tip:** Use the sidebar to navigate between sections.
-        Your uploaded files are stored securely in Google Drive.
-        """
-    )
-
-# ==========================================================
-# --- FOOTER ---
-# ==========================================================
-st.markdown("---")
-st.caption("© 2025 Thermoteq Technologies | Built with Streamlit 💚")
+        # ==========================================================
+        # --- FOOTER ---
+        # ==========================================================
+        st.markdown("---")
+        st.caption("© 2025 Thermoteq Technologies | Built with Streamlit 💚")
