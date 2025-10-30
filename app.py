@@ -8,6 +8,8 @@ import streamlit as st
 import streamlit_authenticator as stauth
 from pathlib import Path
 import gspread
+import os
+import json
 from google.oauth2.service_account import Credentials
 
 # ==========================================================
@@ -27,15 +29,21 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-SERVICE_ACCOUNT_FILE = "keys/tms-service-account.json"
 SHEET_ID = "1eCXmSX6XkVXeRtfOUHUI74ZOvd9l6IoRCSu9TDP71Ws"
 SHEET_NAME = "Sheet1"
 
 try:
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPE)
+    # ✅ Secure credentials handling for Render & local dev
+    if "GOOGLE_CREDENTIALS" in os.environ:
+        info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+        creds = Credentials.from_service_account_info(info, scopes=SCOPE)
+    else:
+        creds = Credentials.from_service_account_file("keys/tms-service-account.json", scopes=SCOPE)
+
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
     users = sheet.get_all_records()
+
 except Exception as e:
     st.error(f"⚠️ Could not connect to Google Sheets: {e}")
     st.stop()
