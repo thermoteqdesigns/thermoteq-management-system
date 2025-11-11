@@ -2,6 +2,18 @@ import streamlit as st
 from pathlib import Path
 import shutil
 import base64
+import psycopg2
+import psycopg2.extras
+
+# --- DATABASE CONNECTION FUNCTION ---
+def get_db_connection():
+    conn = psycopg2.connect(
+        host="localhost",
+        database="thermoteq_db",
+        user="your_user",
+        password="your_password"
+    )
+    return conn
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Thermoteq Projects", layout="wide")
@@ -81,7 +93,7 @@ if st.button("Create Project"):
     if project_name_input.strip():
         project_path = PROJECTS_DIR / project_name_input.strip()
         if not project_path.exists():
-            for folder in ["files", "receipts", "images"]:
+            for folder in ["files", "invoices", "purchases", "images"]:
                 (project_path / folder).mkdir(parents=True, exist_ok=True)
             st.success(f"✅ Project **{project_name_input}** created successfully.")
             st.rerun()
@@ -124,7 +136,7 @@ if not projects_ordered:
     st.info("No projects available yet.")
 else:
     for project in projects_ordered:
-        for folder in ["files", "receipts", "images"]:
+        for folder in ["files", "invoices", "purchases", "images"]:
             (project / folder).mkdir(exist_ok=True)
 
         expanded_state = st.session_state.get("expand_project") == project.name
@@ -135,7 +147,7 @@ else:
 
             # --- UPLOAD FILES ---
             st.markdown("#### 🧰 Upload Files")
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 file_to_upload = st.file_uploader(f"Add File to {project.name}", type=["pdf", "docx", "xlsx"], key=f"file_{project.name}")
                 if file_to_upload:
@@ -145,14 +157,22 @@ else:
                     st.success(f"📁 File '{file_to_upload.name}' added to {project.name}")
                     st.rerun()
             with col2:
-                receipt_to_upload = st.file_uploader(f"Add Receipt to {project.name}", type=["pdf", "jpg", "jpeg", "png"], key=f"receipt_{project.name}")
-                if receipt_to_upload:
-                    save_path = project / "receipts" / receipt_to_upload.name
+                invoice_to_upload = st.file_uploader(f"Add Invoice to {project.name}", type=["pdf", "xlsx", "docx"], key=f"invoice_{project.name}")
+                if invoice_to_upload:
+                    save_path = project / "invoices" / invoice_to_upload.name
                     with open(save_path, "wb") as f:
-                        f.write(receipt_to_upload.getbuffer())
-                    st.success(f"🧾 Receipt '{receipt_to_upload.name}' added to {project.name}")
+                        f.write(invoice_to_upload.getbuffer())
+                    st.success(f"🧾 Invoice '{invoice_to_upload.name}' added to {project.name}")
                     st.rerun()
             with col3:
+                purchase_to_upload = st.file_uploader(f"Add Purchase to {project.name}", type=["pdf", "xlsx", "docx"], key=f"purchase_{project.name}")
+                if purchase_to_upload:
+                    save_path = project / "purchases" / purchase_to_upload.name
+                    with open(save_path, "wb") as f:
+                        f.write(purchase_to_upload.getbuffer())
+                    st.success(f"🛒 Purchase '{purchase_to_upload.name}' added to {project.name}")
+                    st.rerun()
+            with col4:
                 image_to_upload = st.file_uploader(f"Add Image to {project.name}", type=["jpg", "jpeg", "png"], key=f"image_{project.name}")
                 if image_to_upload:
                     save_path = project / "images" / image_to_upload.name
@@ -172,7 +192,7 @@ else:
                 if not files:
                     st.caption(f"No {label.lower()} available yet.")
                 else:
-                    for file in files:
+                    for idx, file in enumerate(files):
                         is_highlighted = file.name == st.session_state.get("highlight_file")
                         highlight_style = "background-color: #F61111FF; padding:4px; border-radius:6px;" if is_highlighted else ""
 
@@ -180,7 +200,7 @@ else:
                         with col1:
                             st.markdown(f"<div style='{highlight_style}'>📄 {file.name}</div>", unsafe_allow_html=True)
                         with col2:
-                            if st.button("👁️ View", key=f"view_{file}_{label}"):
+                            if st.button("👁️ View", key=f"view_{folder_path.name}_{file.name}_{idx}"):
                                 st.session_state["view_file_path"] = str(file)
                                 st.session_state["view_project_name"] = project.name
                                 st.session_state["expand_project"] = project.name
@@ -188,11 +208,16 @@ else:
                                 st.rerun()
                         with col3:
                             with open(file, "rb") as f:
-                                st.download_button(label="⬇️", data=f, file_name=file.name, mime="application/octet-stream", key=f"download_{file}_{label}")
-                        # --- DELETE BUTTON FOR ADMINS ONLY ---
+                                st.download_button(
+                                    label="⬇️",
+                                    data=f,
+                                    file_name=file.name,
+                                    mime="application/octet-stream",
+                                    key=f"download_{folder_path.name}_{file.name}_{idx}"
+                                )
                         with col4:
                             if st.session_state.get("user_role") == "admin":
-                                if st.button("🗑️ Delete", key=f"delete_{file}_{label}"):
+                                if st.button("🗑️ Delete", key=f"delete_{folder_path.name}_{file.name}_{idx}"):
                                     try:
                                         file.unlink()
                                         st.success(f"✅ Deleted '{file.name}' successfully!")
@@ -200,9 +225,8 @@ else:
                                     except Exception as e:
                                         st.error(f"❌ Could not delete '{file.name}': {e}")
 
-            list_files(project / "files", "📁 Files")
-            list_files(project / "receipts", "🧾 Receipts")
-            list_files(project / "images", "🖼️ Images")
+            for folder in ["files", "invoices", "purchases", "images"]:
+                list_files(project / folder, folder.capitalize())
 
             st.markdown("---")
 

@@ -2,11 +2,10 @@ import streamlit as st
 from pathlib import Path
 import shutil
 import os
-import datetime
-import gspread
 import pandas as pd
-import json
-from google.oauth2.service_account import Credentials
+import psycopg2
+import psycopg2.extras
+import bcrypt
 
 # ==========================================================
 # --- ADMIN ACCESS CONTROL ---
@@ -20,7 +19,7 @@ if st.session_state.get("user_role") != "admin":
 # ==========================================================
 st.set_page_config(page_title="Thermoteq Admin Panel", layout="wide")
 st.title("🛠️ Thermoteq Admin Panel")
-st.write("Centralized control for managing projects, files, users, and logs.")
+st.write("Centralized control for managing projects, files, and users.")
 st.markdown("---")
 
 # ==========================================================
@@ -36,47 +35,29 @@ PROJECTS_DIR = Path("projects")
 PROJECTS_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
-LOG_FILE = Path("logs/admin_logs.txt")
-LOG_FILE.parent.mkdir(exist_ok=True)
-if not LOG_FILE.exists():
-    LOG_FILE.touch()
 
 # ==========================================================
-# --- HELPER: LOG ACTIONS ---
+# --- POSTGRESQL CONNECTION SETTINGS ---
 # ==========================================================
-def log_action(action: str):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
-        f.write(f"[{timestamp}] {action}\n")
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_NAME = os.environ.get("DB_NAME", "thermoteq_db")
+DB_USER = os.environ.get("DB_USER", "postgres")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "kahenisatima")  # replace with your password
 
-# ==========================================================
-# --- GOOGLE SHEETS CONNECTION ---
-# ==========================================================
-SCOPE = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-SHEET_ID = "1eCXmSX6XkVXeRtfOUHUI74ZOvd9l6IoRCSu9TDP71Ws"
-SHEET_NAME = "Sheet1"
-
-try:
-    if "GOOGLE_CREDENTIALS" in os.environ:
-        info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-        creds = Credentials.from_service_account_info(info, scopes=SCOPE)
-    else:
-        creds = Credentials.from_service_account_file("keys/tms-service-account.json", scopes=SCOPE)
-
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-except Exception as e:
-    st.error(f"⚠️ Could not connect to Google Sheets: {e}")
-    st.stop()
+def get_db_connection():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
 
 # ==========================================================
 # --- TAB NAVIGATION ---
 # ==========================================================
-tabs = ["Projects & Files", "Manage Users", "Activity Logs"]
+tabs = ["Projects & Files", "Manage Users"]
 selected_tab = st.sidebar.radio("Admin Panel Sections", tabs)
 
 # ==========================================================
@@ -95,15 +76,15 @@ if selected_tab == "Projects & Files":
         for project in projects:
             with st.expander(f"📘 {project.name}", expanded=False):
                 st.write(f"**Path:** `{project.resolve()}`")
-
                 # Delete project
                 if st.button(f"🗑️ Delete Project", key=f"del_proj_{project.name}"):
                     shutil.rmtree(project)
                     st.success(f"✅ Project '{project.name}' deleted successfully.")
-                    log_action(f"Deleted project: {project.name}")
                     st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                    st.rerun()
 
-                for folder in ["files", "receipts", "images"]:
+                # List all files under project folders
+                for folder in ["files", "invoices", "purchases", "images"]:
                     folder_path = project / folder
                     folder_path.mkdir(exist_ok=True)
                     files = list(folder_path.glob("*"))
@@ -111,16 +92,16 @@ if selected_tab == "Projects & Files":
                     if not files:
                         st.write("_No files_")
                     else:
-                        for f in files:
+                        for idx, f in enumerate(files):
                             col1, col2 = st.columns([8, 1])
                             with col1:
                                 st.write(f.name)
                             with col2:
-                                if st.button("🗑️", key=f"del_{project.name}_{f.name}"):
+                                if st.button("🗑️", key=f"del_{project.name}_{folder}_{f.name}_{idx}"):
                                     f.unlink()
                                     st.success(f"✅ File '{f.name}' deleted successfully.")
-                                    log_action(f"Deleted file: {f.name} in project {project.name}")
                                     st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                                    st.rerun()
 
     st.markdown("### 📁 Uploaded Company Files")
     if not uploaded_files:
@@ -134,22 +115,28 @@ if selected_tab == "Projects & Files":
                 if st.button("🗑️", key=f"del_upload_{f.name}"):
                     f.unlink()
                     st.success(f"✅ File '{f.name}' deleted successfully.")
-                    log_action(f"Deleted uploaded file: {f.name}")
                     st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                    st.rerun()
 
 # ==========================================================
-# --- TAB 2: MANAGE USERS (Google Sheets Integration) ---
+# --- TAB 2: MANAGE USERS (PostgreSQL) ---
 # ==========================================================
 elif selected_tab == "Manage Users":
     st.subheader("👤 User Management")
-    st.markdown("Manage users directly from the connected Google Sheet.")
+    st.markdown("Manage users directly from the PostgreSQL database.")
     st.markdown("---")
 
+    # --- Fetch users from DB ---
     try:
-        users = sheet.get_all_records()
-        df = pd.DataFrame(users)
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cur.execute("SELECT user_id, username, role, created_at FROM users ORDER BY user_id;")
+        users = cur.fetchall()
+        df = pd.DataFrame(users, columns=["user_id", "username", "role", "created_at"])
+        cur.close()
+        conn.close()
     except Exception as e:
-        st.error(f"⚠️ Could not load users: {e}")
+        st.error(f"⚠️ Could not fetch users: {e}")
         df = pd.DataFrame()
 
     # --- Display Users ---
@@ -158,69 +145,88 @@ elif selected_tab == "Manage Users":
         st.info("No users found.")
     else:
         st.dataframe(df)
-        st.success(f"✅ {len(df)} users loaded from Google Sheets.")
+        st.success(f"✅ {len(df)} users loaded from database.")
 
     # --- Add New User ---
     st.markdown("---")
     st.subheader("➕ Add New User")
-
     with st.form("add_user_form"):
         new_username = st.text_input("Username")
-        new_name = st.text_input("Full Name")
         new_password = st.text_input("Password", type="password")
         new_role = st.selectbox("Role", ["user", "admin"])
         submitted = st.form_submit_button("Add User")
 
         if submitted:
-            if new_username and new_name and new_password:
+            if new_username and new_password:
                 try:
-                    # Check if username exists
-                    existing_usernames = [u["username"] for u in users]
-                    if new_username in existing_usernames:
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT username FROM users WHERE username=%s;", (new_username,))
+                    if cur.fetchone():
                         st.error("❌ Username already exists.")
                     else:
-                        new_row = [new_username, new_name, new_password, new_role]
-                        sheet.append_row(new_row)
+                        hashed = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                        cur.execute(
+                            "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s);",
+                            (new_username, hashed, new_role)
+                        )
+                        conn.commit()
                         st.success(f"✅ User '{new_username}' added successfully!")
-                        log_action(f"Added user: {new_username} ({new_role})")
-                        st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                    cur.close()
+                    conn.close()
+                    st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                    st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Could not add user: {e}")
             else:
                 st.error("⚠️ Please fill in all required fields.")
 
+    # --- Update User ---
+    st.markdown("---")
+    st.subheader("✏️ Update User")
+    if not df.empty:
+        selected_user = st.selectbox("Select user to update", df["username"].tolist())
+        new_password = st.text_input("New Password (leave blank to keep current)", type="password")
+        new_role = st.selectbox("New Role", ["user", "admin"], index=0)
+        if st.button("Update User"):
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                # Update password only if provided
+                if new_password:
+                    hashed = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    cur.execute("UPDATE users SET password_hash=%s, role=%s WHERE username=%s;", 
+                                (hashed, new_role, selected_user))
+                else:
+                    cur.execute("UPDATE users SET role=%s WHERE username=%s;", 
+                                (new_role, selected_user))
+                conn.commit()
+                cur.close()
+                conn.close()
+                st.success(f"✅ User '{selected_user}' updated successfully!")
+                st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                st.rerun()
+            except Exception as e:
+                st.error(f"⚠️ Could not update user: {e}")
+
     # --- Delete User ---
     st.markdown("---")
     st.subheader("🗑️ Delete User")
-
     if not df.empty:
-        selected_user = st.selectbox("Select user to delete", df["username"].tolist())
+        selected_user = st.selectbox("Select user to delete", df["username"].tolist(), key="delete_user")
         if st.button("Delete Selected User"):
             try:
-                cell = sheet.find(selected_user)
-                if cell:
-                    sheet.delete_rows(cell.row)
-                    st.success(f"✅ User '{selected_user}' deleted successfully.")
-                    log_action(f"Deleted user: {selected_user}")
-                    st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
-                else:
-                    st.warning("⚠️ User not found in the sheet.")
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("DELETE FROM users WHERE username=%s;", (selected_user,))
+                conn.commit()
+                cur.close()
+                conn.close()
+                st.success(f"✅ User '{selected_user}' deleted successfully.")
+                st.session_state["refresh_admin"] = not st.session_state["refresh_admin"]
+                st.rerun()
             except Exception as e:
                 st.error(f"⚠️ Could not delete user: {e}")
-
-# ==========================================================
-# --- TAB 3: ACTIVITY LOGS ---
-# ==========================================================
-elif selected_tab == "Activity Logs":
-    st.subheader("📜 Admin Activity Logs")
-
-    if not LOG_FILE.exists() or LOG_FILE.stat().st_size == 0:
-        st.info("No logs available yet.")
-    else:
-        with open(LOG_FILE, "r") as f:
-            logs = f.readlines()
-        for log in reversed(logs[-100:]):  # show last 100 actions
-            st.write(log.strip())
 
 # ==========================================================
 # --- PAGE REFRESH ---
